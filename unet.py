@@ -14,98 +14,11 @@ from scipy import ndimage
 import time
 from skimage.segmentation import slic
 from skimage.util import img_as_float
+from encode import sp_encode
 
 SP = True
 
 in_channels = 9 if SP else 3
-
-############################################################################################### Online SP generation stuff
-def create_adj_matrix(segments_slic, kernel_size, n_sp, width, length):
-    G = np.zeros((n_sp, n_sp)) # represents neighbouring relationship between superpixels
-    for seg in np.unique(segments_slic):
-        mask = segments_slic == seg
-        
-        xy = np.where(mask)
-        max_x, min_x = np.max(xy[0]), np.min(xy[0])
-        max_y, min_y = np.max(xy[1]), np.min(xy[1])
-        min_x = max(0, min_x - kernel_size) 
-        min_y = max(0, min_y - kernel_size)
-        max_x = min(width, max_x + kernel_size)
-        max_y = max(length, max_y + kernel_size)
-        region_of_interest = mask[min_x:max_x, min_y:max_y]
-        
-        dilated = ndimage.binary_dilation(region_of_interest)
-        diff = dilated - region_of_interest.astype(int)
-        neig = np.unique(segments_slic[min_x:max_x, min_y:max_y][diff != 0])
-        G[seg, neig] = 1
-    return G
-
-
-def generate_colored_G(G):
-    # count degree of all node.
-    degree =[]
-    for i in range(len(G)):
-        degree.append(sum(G[i]))
-
-    # instantiate the possible color
-    colorDict = {}
-    for i in range(len(G)):
-        colorDict[i]=[0,1,2,3,4,5]
-
-
-    # sort the node depends on the degree
-    sortedNode=[]
-    indeks = []
-
-    # use selection sort
-    for i in range(len(degree)):
-        _max = 0
-        j = 0
-        for j in range(len(degree)):
-            if j not in indeks:
-                if degree[j] > _max:
-                    _max = degree[j]
-                    idx = j
-        indeks.append(idx)
-        sortedNode.append(idx)
-
-    # The main process
-    solution={}
-    for n in sortedNode: # starting from the node of highest degree
-        setTheColor = colorDict[n] # setTheColor = list of available colors
-        solution[n] = setTheColor[0] # assign the color for current node to be the first available color
-        adjacentNode = G[n] # G[t_[n]] is the corresponding row of the adj matrix for node n
-        for j in range(len(adjacentNode)): # for each node in the graph
-            if adjacentNode[j]==1 and (setTheColor[0] in colorDict[j]): # if its a neighbour and it currently has the color just used by node n
-                colorDict[j].remove(setTheColor[0]) # remove that color from the list so that we don't end up having some colored neighbours
-    return solution
-
-
-def sp_encode(img):
-    width, length, _ = np.shape(img)
-    segments_slic = slic(img, n_segments=300, compactness=10, sigma=1,
-                        start_label=1) - 1 
-
-    # # # Find the adjacency matrix for that superpixelation
-    n_sp = len(np.unique(segments_slic))
-    kernel_size = 3
-
-    G = create_adj_matrix(segments_slic, kernel_size, n_sp, width, length)
-    
-    # # # Use that adjacency matrix to generate a "colored graph" - CSP problem
-    solution = generate_colored_G(G)
-
-    # Vectorised code
-    segments_slic_1d = segments_slic.flatten()
-    color_pix = np.array([solution[segment] for segment in segments_slic_1d])
-    color_pix = color_pix.reshape(segments_slic.shape)
-
-    out = F.one_hot(torch.tensor(color_pix)).permute(2, 0, 1)
-
-    return out
-###############################################################################################
-
-
 
 class UNet(nn.Module):
     def __init__(self, input_channels):
@@ -135,14 +48,10 @@ class UNet(nn.Module):
         self.outconv = nn.Conv2d(16, 1, kernel_size=1)
 
     def forward(self, x):
-        # x here is a batch of images (with the super pixel channels)
-        # to then use the superpixel channels and cat then to later layers we can...
-        # sp = x[:,:6,width,height]
         # Encoder
         xe11 = relu(self.e11(x))
         xe12 = relu(self.e12(xe11))
         xp1 = self.pool1(xe12)
-        # cat sp to xp1 (I think, check UNet architecture)
 
         xe21 = relu(self.e21(xp1))
         xe22 = relu(self.e22(xe21))
@@ -177,69 +86,10 @@ class UNet(nn.Module):
 
 import os
 
-# print(os.listdir("/home/jroberts2/Carvana/carvana-image-masking-challenge/"))
-
-import zipfile
-import shutil
-
 DATASET_DIR = '/home/jroberts2/Carvana/carvana-image-masking-challenge/'
 WORKING_DIR = '/home/jroberts2/Carvana/working/'
 
-# # ######################################################
-# # # code for superpixelation moving
-# # Move sp_train to WORKING_DIR
-# # need an empty sp_val directory in working and sp_tensors full of 5088 tensors 
-# shutil.move(DATASET_DIR + 'sp_train', WORKING_DIR)
-# # it will still use the same train_masks 
-# print("moved!")
-    
-# train_dir = WORKING_DIR + 'sp_train/'
-# val_dir = WORKING_DIR + 'sp_val/'
-# for file in sorted(os.listdir(train_dir))[3200:]:
-#     shutil.move(train_dir + file, val_dir)
-# print("sp_val set up!")
-# print(len(os.listdir(WORKING_DIR + 'sp_train/')))
-# print(len(os.listdir(WORKING_DIR + 'sp_val/')))
-# ######################################################
-
-
-
-# if len(os.listdir(WORKING_DIR)) <= 1:
-#     # Move train and train_masks directories to WORKING_DIR
-#     shutil.move(DATASET_DIR + 'train', WORKING_DIR)
-#     shutil.move(DATASET_DIR + 'train_masks', WORKING_DIR)
-
-#     print(
-#         len(os.listdir(WORKING_DIR + 'train')),
-#         len(os.listdir(WORKING_DIR + 'train_masks'))
-#     )
-# print(len(os.listdir(WORKING_DIR + 'train/')))
-# print(len(os.listdir(WORKING_DIR + 'train_masks/')))
-
-# train_dir = WORKING_DIR + 'train/'
-# val_dir = WORKING_DIR + 'val/'
-# for file in sorted(os.listdir(train_dir))[3200:]:
-#     shutil.move(train_dir + file, val_dir)
-
-# masks_dir = WORKING_DIR + 'train_masks/'
-# val_masks_dir = WORKING_DIR + 'val_masks/'
-# for file in sorted(os.listdir(masks_dir))[3200:]:
-#     shutil.move(masks_dir + file, val_masks_dir)
-
-# print(len(os.listdir(WORKING_DIR + 'train/')))
-# print(len(os.listdir(WORKING_DIR + 'train_masks/')))
-# print(len(os.listdir(WORKING_DIR + 'val/')))
-# print(len(os.listdir(WORKING_DIR + 'val_masks/')))
-
-# # # Show first 10 files in train and train_masks directories
-# print(sorted(os.listdir(WORKING_DIR + 'train'))[:10])
-# print(sorted(os.listdir(WORKING_DIR + 'train_masks'))[:10])
-# print(sorted(os.listdir(WORKING_DIR + 'val'))[:10])
-# print(sorted(os.listdir(WORKING_DIR + 'val_masks'))[:10])
-
 from torch.utils.data import Dataset
-
-# write function to add SP channels to image
 
 class CarvanaDataset(Dataset):
     def __init__(self, image_dir, mask_dir, img_transform=None, sp_transform=None, SP=False):
@@ -302,10 +152,11 @@ TRAIN_MASK_DIR = '/home/jroberts2/Carvana/working/train_masks/'
 VAL_IMG_DIR = '/home/jroberts2/Carvana/working/val/'
 VAL_MASK_DIR = '/home/jroberts2/Carvana/working/val_masks/'
 
+
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
-################################################### SP TRUE
+################################################### transformations for superpixelation encoded tensors (9 channels)
 sp_train_transform = A.Compose(
     [
         A.Resize(height=IMAGE_HEIGHT, width=IMAGE_WIDTH), # SP stuff doesn't like the resize operation for some reason
@@ -333,9 +184,8 @@ sp_test_transform = A.Compose(
         ToTensorV2(),
     ]
 )
-###################################################
 
-################################################### for SP FALSE
+################################################### transformations for normal images (3 channels)
 train_transform = A.Compose(
     [
         A.Resize(height=IMAGE_HEIGHT, width=IMAGE_WIDTH),
@@ -373,17 +223,13 @@ test_ds = CarvanaDataset(image_dir=VAL_IMG_DIR, mask_dir=VAL_MASK_DIR, img_trans
 test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY, shuffle=False)
 
 # Initialize UNet model
-model = UNet(in_channels) # change parameters if using sp's
+model = UNet(in_channels)
 
 # Define loss function and optimizer
 criterion = nn.BCEWithLogitsLoss()
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
 model.to(DEVICE)
-print("Device = ", DEVICE)
-
-# from torchsummary import summary
-# summary(model, (3, 256, 256))
 
 def check_accuracy(loader, model, device='cuda'):
     num_correct = 0
@@ -437,10 +283,6 @@ for epoch in range(NUM_EPOCHS):
           # forward
         with torch.cuda.amp.autocast():
             predictions = model(data)
-            # print("A.", predictions.shape)
-            # if SP:
-            #     predictions = predictions.unsqueeze(2)
-            #     print("B.", predictions.shape)
             loss = criterion(predictions, targets)
 
 
